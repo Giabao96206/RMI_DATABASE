@@ -141,7 +141,7 @@ public class RmiClientService {
             switchServer("SERVER_1", "Tự động failover: Server 2 mất kết nối");
         }
 
-        if (s1Before != server1Online || s2Before != server2Online) {
+        if (server1Online || server2Online || s1Before != server1Online || s2Before != server2Online) {
             notifyStatusChange();
         }
     }

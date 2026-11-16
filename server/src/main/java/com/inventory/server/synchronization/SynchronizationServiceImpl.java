@@ -80,16 +80,18 @@ public class SynchronizationServiceImpl extends UnicastRemoteObject implements S
         }
 
         return dbManager.executeInTransaction(conn -> {
-            ProductDTO localProduct = productRepository.findById(event.getEntityId());
+            ProductDTO localProduct = productRepository.findById(conn, event.getEntityId());
 
             if (event.getEventType() == EventType.CREATE) {
                 if (localProduct == null) {
                     logger.info("[SYNC-APPLY] Creating new product from peer: ID={}, Code={}", remoteProduct.getId(), remoteProduct.getProductCode());
                     productRepository.forceUpsert(conn, remoteProduct);
+                    syncRepository.recordIncomingSyncEvent(conn, event);
                     syncRepository.recordProcessedEvent(conn, event.getEventId(), event.getOriginServerId(), SyncStatus.SUCCESS);
                 } else {
                     if (isSameContent(localProduct, remoteProduct)) {
                         logger.info("[SYNC-APPLY] Product {} already exists with identical content. Marking processed.", localProduct.getId());
+                        syncRepository.recordIncomingSyncEvent(conn, event);
                         syncRepository.recordProcessedEvent(conn, event.getEventId(), event.getOriginServerId(), SyncStatus.SUCCESS);
                     } else {
                         // Conflict detected: duplicate creation with divergent data
@@ -102,6 +104,7 @@ public class SynchronizationServiceImpl extends UnicastRemoteObject implements S
                 if (localProduct == null) {
                     logger.info("[SYNC-APPLY] Product {} not found locally for UPDATE, inserting incoming version.", remoteProduct.getId());
                     productRepository.forceUpsert(conn, remoteProduct);
+                    syncRepository.recordIncomingSyncEvent(conn, event);
                     syncRepository.recordProcessedEvent(conn, event.getEventId(), event.getOriginServerId(), SyncStatus.SUCCESS);
                 } else {
                     // Check for conflict:
@@ -125,12 +128,14 @@ public class SynchronizationServiceImpl extends UnicastRemoteObject implements S
                         // Remote update is newer and clean descendant
                         logger.info("[SYNC-APPLY] Updating product {} from peer: version={}", remoteProduct.getId(), remoteProduct.getVersion());
                         productRepository.forceUpsert(conn, remoteProduct);
+                        syncRepository.recordIncomingSyncEvent(conn, event);
                         syncRepository.recordProcessedEvent(conn, event.getEventId(), event.getOriginServerId(), SyncStatus.SUCCESS);
                     }
                 }
             } else if (event.getEventType() == EventType.DELETE) {
                 logger.info("[SYNC-APPLY] Deleting product {} from peer", event.getEntityId());
                 productRepository.softDelete(conn, event.getEntityId(), event.getTimestamp(), event.getOriginServerId());
+                syncRepository.recordIncomingSyncEvent(conn, event);
                 syncRepository.recordProcessedEvent(conn, event.getEventId(), event.getOriginServerId(), SyncStatus.SUCCESS);
             }
 
@@ -199,6 +204,11 @@ public class SynchronizationServiceImpl extends UnicastRemoteObject implements S
     @Override
     public boolean ping() throws RemoteException {
         return true;
+    }
+
+    @Override
+    public List<ProductDTO> getAllActiveProducts() throws RemoteException {
+        return productRepository.findAll(false);
     }
 
     public void setPeerReachable(boolean peerReachable) {

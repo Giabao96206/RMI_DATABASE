@@ -41,24 +41,22 @@ public class DataSeeder {
                 for (ProductDTO p : sampleProducts) {
                     productRepo.insert(conn, p);
 
-                    // If seeding on SERVER_1, also queue sync events for SERVER_2
-                    if ("SERVER_1".equals(config.getServerId())) {
-                        SyncEventDTO event = new SyncEventDTO(
-                                UUID.randomUUID().toString(),
-                                "PRODUCT",
-                                p.getId(),
-                                EventType.CREATE,
-                                JsonUtils.toJson(p),
-                                config.getServerId(),
-                                config.getPeerServerId(),
-                                now,
-                                1,
-                                SyncStatus.PENDING,
-                                0,
-                                null
-                        );
-                        syncRepo.insertEvent(conn, event);
-                    }
+                    // Queue sync events for peer server
+                    SyncEventDTO event = new SyncEventDTO(
+                            UUID.randomUUID().toString(),
+                            "PRODUCT",
+                            p.getId(),
+                            EventType.CREATE,
+                            JsonUtils.toJson(p),
+                            config.getServerId(),
+                            config.getPeerServerId(),
+                            now,
+                            1,
+                            SyncStatus.PENDING,
+                            0,
+                            null
+                    );
+                    syncRepo.insertEvent(conn, event);
                 }
                 return null;
             });

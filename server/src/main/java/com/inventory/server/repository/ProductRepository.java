@@ -117,15 +117,22 @@ public class ProductRepository {
         }
     }
 
-    public ProductDTO findById(String productId) {
+    public ProductDTO findById(Connection conn, String productId) throws SQLException {
         String sql = "SELECT * FROM products WHERE id = ?";
-        try (Connection conn = dbManager.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, productId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
                     return mapRow(rs);
                 }
             }
+        }
+        return null;
+    }
+
+    public ProductDTO findById(String productId) {
+        try (Connection conn = dbManager.getConnection()) {
+            return findById(conn, productId);
         } catch (SQLException e) {
             logger.error("Error finding product by id: {}", productId, e);
         }

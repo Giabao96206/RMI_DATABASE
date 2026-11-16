@@ -122,6 +122,27 @@ public class SyncRepository {
         }
     }
 
+    public void recordIncomingSyncEvent(Connection conn, SyncEventDTO event) throws SQLException {
+        String sql = """
+            INSERT OR REPLACE INTO synchronization_events (
+                event_id, entity_type, entity_id, event_type, payload_json, 
+                origin_server_id, target_server_id, timestamp, version, status, retry_count, last_error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SUCCESS', 0, NULL)
+        """;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, event.getEventId());
+            ps.setString(2, event.getEntityType());
+            ps.setString(3, event.getEntityId());
+            ps.setString(4, event.getEventType().name());
+            ps.setString(5, event.getPayloadJson());
+            ps.setString(6, event.getOriginServerId());
+            ps.setString(7, event.getTargetServerId());
+            ps.setLong(8, event.getTimestamp());
+            ps.setInt(9, event.getVersion());
+            ps.executeUpdate();
+        }
+    }
+
     public void recordConflict(Connection conn, ConflictDTO conflict) throws SQLException {
         String sql = """
             INSERT INTO sync_conflicts (conflict_id, event_id, entity_id, local_data, remote_data, detected_at, resolved, resolution_note)

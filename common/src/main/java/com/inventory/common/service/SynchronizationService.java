@@ -54,4 +54,9 @@ public interface SynchronizationService extends Remote {
      * Server-to-server heartbeat ping.
      */
     boolean ping() throws RemoteException;
+
+    /**
+     * Retrieve all active products for full catalog reconciliation on connection.
+     */
+    java.util.List<com.inventory.common.dto.ProductDTO> getAllActiveProducts() throws RemoteException;
 }

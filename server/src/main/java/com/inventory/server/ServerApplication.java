@@ -45,16 +45,14 @@ public class ServerApplication {
             ProductRepository productRepo = new ProductRepository(dbManager);
             SyncRepository syncRepo = new SyncRepository(dbManager);
 
-            // Seed initial 20 sample products if database is empty on Server 1
-            if ("SERVER_1".equals(config.getServerId())) {
-                com.inventory.server.database.DataSeeder.seedIfEmpty(dbManager, productRepo, syncRepo, config);
-            }
+            // Seed initial 20 sample products if database is empty
+            com.inventory.server.database.DataSeeder.seedIfEmpty(dbManager, productRepo, syncRepo, config);
 
             // Initialize Synchronization Service (for Server-to-Server RMI calls)
             this.syncService = new SynchronizationServiceImpl(config, dbManager, productRepo, syncRepo);
 
             // Initialize Background Sync Manager
-            this.syncManager = new SyncManager(config, syncRepo, syncService);
+            this.syncManager = new SyncManager(config, syncRepo, syncService, productRepo);
             this.syncManager.start();
 
             // Initialize Inventory Service (for Client RMI calls)

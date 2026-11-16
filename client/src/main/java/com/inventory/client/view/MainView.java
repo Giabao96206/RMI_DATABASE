@@ -80,6 +80,9 @@ public class MainView extends BorderPane {
                 buildMonitorTab(),
                 buildSyncTab()
         );
+        tabPane.getSelectionModel().selectedItemProperty().addListener((obs, oldTab, newTab) -> {
+            refreshAllAsync();
+        });
         setCenter(tabPane);
 
         // Bottom: Status Bar
@@ -94,6 +97,9 @@ public class MainView extends BorderPane {
         clientService.addStatusChangeListener(() -> Platform.runLater(() -> {
             updateHeaderBadges();
             updateServerCards();
+            refreshProductsAsync();
+            refreshSyncHistoryAsync();
+            refreshStatsAsync();
         }));
 
         // Initial Data Load
