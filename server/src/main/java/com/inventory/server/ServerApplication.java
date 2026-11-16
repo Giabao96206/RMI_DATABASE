@@ -52,7 +52,7 @@ public class ServerApplication {
             this.syncService = new SynchronizationServiceImpl(config, dbManager, productRepo, syncRepo);
 
             // Initialize Background Sync Manager
-            this.syncManager = new SyncManager(config, syncRepo, syncService, productRepo);
+            this.syncManager = new SyncManager(config, dbManager, syncRepo, syncService, productRepo);
             this.syncManager.start();
 
             // Initialize Inventory Service (for Client RMI calls)

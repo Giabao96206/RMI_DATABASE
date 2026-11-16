@@ -98,6 +98,19 @@ public class SyncRepository {
         }
     }
 
+    public boolean hasEvent(String eventId) {
+        String sql = "SELECT 1 FROM synchronization_events WHERE event_id = ?";
+        try (Connection conn = dbManager.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, eventId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        } catch (SQLException e) {
+            logger.error("Error checking sync event existence: {}", eventId, e);
+        }
+        return false;
+    }
+
     public boolean isEventProcessed(String eventId) {
         String sql = "SELECT 1 FROM processed_events WHERE event_id = ?";
         try (Connection conn = dbManager.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -222,7 +235,7 @@ public class SyncRepository {
 
     public List<SyncEventDTO> getEventsAfter(long timestamp) {
         List<SyncEventDTO> list = new ArrayList<>();
-        String sql = "SELECT * FROM synchronization_events WHERE timestamp > ? ORDER BY timestamp ASC";
+        String sql = "SELECT * FROM synchronization_events WHERE timestamp >= ? ORDER BY timestamp ASC";
         try (Connection conn = dbManager.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setLong(1, timestamp);
             try (ResultSet rs = ps.executeQuery()) {

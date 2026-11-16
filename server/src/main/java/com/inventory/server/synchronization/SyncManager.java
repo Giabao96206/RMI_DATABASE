@@ -7,6 +7,7 @@ import com.inventory.common.model.SyncStatus;
 import com.inventory.common.service.SynchronizationService;
 import com.inventory.common.util.JsonUtils;
 import com.inventory.server.config.ServerConfig;
+import com.inventory.server.database.DatabaseManager;
 import com.inventory.server.repository.ProductRepository;
 import com.inventory.server.repository.SyncRepository;
 import org.slf4j.Logger;
@@ -25,6 +26,7 @@ public class SyncManager {
     private static final Logger logger = LoggerFactory.getLogger(SyncManager.class);
 
     private final ServerConfig config;
+    private final DatabaseManager dbManager;
     private final SyncRepository syncRepository;
     private final SynchronizationServiceImpl localSyncService;
     private final ProductRepository productRepository;
@@ -34,8 +36,10 @@ public class SyncManager {
     private volatile boolean peerConnected = false;
     private volatile long lastSuccessfulSyncTime = 0;
 
-    public SyncManager(ServerConfig config, SyncRepository syncRepository, SynchronizationServiceImpl localSyncService, ProductRepository productRepository) {
+    public SyncManager(ServerConfig config, DatabaseManager dbManager, SyncRepository syncRepository,
+                       SynchronizationServiceImpl localSyncService, ProductRepository productRepository) {
         this.config = config;
+        this.dbManager = dbManager;
         this.syncRepository = syncRepository;
         this.localSyncService = localSyncService;
         this.productRepository = productRepository;
@@ -44,6 +48,10 @@ public class SyncManager {
             t.setDaemon(true);
             return t;
         });
+    }
+
+    public SyncManager(ServerConfig config, SyncRepository syncRepository, SynchronizationServiceImpl localSyncService, ProductRepository productRepository) {
+        this(config, null, syncRepository, localSyncService, productRepository);
     }
 
     public SyncManager(ServerConfig config, SyncRepository syncRepository, SynchronizationServiceImpl localSyncService) {
@@ -177,12 +185,39 @@ public class SyncManager {
                 peerSyncService.acknowledgeEvents(ackIds);
             }
 
-            // 3. Full catalog reconciliation (guarantees both servers have ALL items)
+            // 3. Reconcile complete sync history log so both servers have identical origin/target history
+            syncMissingHistoryFromPeer();
+
+            // 4. Full catalog reconciliation (guarantees both servers have ALL items)
             reconcileCatalogs();
 
             logger.info(">>> Catch-up synchronization complete with {}", config.getPeerServerId());
         } catch (Exception e) {
             logger.error("Error during catch-up sync: {}", e.getMessage(), e);
+        }
+    }
+
+    private void syncMissingHistoryFromPeer() {
+        if (peerSyncService == null || syncRepository == null) return;
+        try {
+            List<SyncEventDTO> peerHistory = peerSyncService.getEventsAfter(0);
+            if (peerHistory == null || peerHistory.isEmpty()) return;
+
+            int syncedCount = 0;
+            for (SyncEventDTO ev : peerHistory) {
+                if (!syncRepository.hasEvent(ev.getEventId())) {
+                    dbManager.executeInTransaction(conn -> {
+                        syncRepository.recordIncomingSyncEvent(conn, ev);
+                        return null;
+                    });
+                    syncedCount++;
+                }
+            }
+            if (syncedCount > 0) {
+                logger.info("[HISTORY-SYNC] Reconciled {} historical sync events from peer {}", syncedCount, config.getPeerServerId());
+            }
+        } catch (Exception e) {
+            logger.warn("Could not sync missing history from peer: {}", e.getMessage());
         }
     }
 
@@ -196,33 +231,46 @@ public class SyncManager {
                 return;
             }
 
-            List<SyncEventDTO> missingEvents = new ArrayList<>();
+            int appliedCount = 0;
             long now = System.currentTimeMillis();
 
             for (ProductDTO peerProd : peerProducts) {
                 ProductDTO localProd = productRepository.findById(peerProd.getId());
                 if (localProd == null || localProd.getVersion() < peerProd.getVersion()) {
-                    SyncEventDTO ev = new SyncEventDTO(
-                            UUID.randomUUID().toString(),
-                            "PRODUCT",
-                            peerProd.getId(),
-                            (localProd == null) ? EventType.CREATE : EventType.UPDATE,
-                            JsonUtils.toJson(peerProd),
-                            config.getPeerServerId(),
-                            config.getServerId(),
-                            now,
-                            peerProd.getVersion(),
-                            SyncStatus.SUCCESS,
-                            0,
-                            null
-                    );
-                    missingEvents.add(ev);
+                    String origin = (peerProd.getLastModifiedByServer() != null && !peerProd.getLastModifiedByServer().trim().isEmpty())
+                            ? peerProd.getLastModifiedByServer()
+                            : config.getPeerServerId();
+                    String target = origin.equals(config.getServerId()) ? config.getPeerServerId() : config.getServerId();
+
+                    dbManager.executeInTransaction(conn -> {
+                        productRepository.forceUpsert(conn, peerProd);
+                        // Record event if not already present in sync table
+                        String eventId = UUID.nameUUIDFromBytes(("RECONCILE-" + peerProd.getId() + "-v" + peerProd.getVersion()).getBytes()).toString();
+                        if (!syncRepository.hasEvent(eventId)) {
+                            SyncEventDTO ev = new SyncEventDTO(
+                                    eventId,
+                                    "PRODUCT",
+                                    peerProd.getId(),
+                                    (localProd == null) ? EventType.CREATE : EventType.UPDATE,
+                                    JsonUtils.toJson(peerProd),
+                                    origin,
+                                    target,
+                                    now,
+                                    peerProd.getVersion(),
+                                    SyncStatus.SUCCESS,
+                                    0,
+                                    null
+                            );
+                            syncRepository.recordIncomingSyncEvent(conn, ev);
+                        }
+                        return null;
+                    });
+                    appliedCount++;
                 }
             }
 
-            if (!missingEvents.isEmpty()) {
-                logger.info("[RECONCILE] Applying {} missing/updated products from peer {}", missingEvents.size(), config.getPeerServerId());
-                localSyncService.receiveEvents(missingEvents);
+            if (appliedCount > 0) {
+                logger.info("[RECONCILE] Applied {} missing/updated products from peer {}", appliedCount, config.getPeerServerId());
             }
         } catch (Exception e) {
             logger.warn("Reconcile catalogs encountered error: {}", e.getMessage());

@@ -33,26 +33,32 @@ public class DataSeeder {
 
     public static void seedProducts(DatabaseManager dbManager, ProductRepository productRepo,
                                    SyncRepository syncRepo, ServerConfig config) {
-        List<ProductDTO> sampleProducts = getSampleProducts(config.getServerId());
+        String originServerId = "SERVER_1";
+        String targetServerId = "SERVER_2";
+        List<ProductDTO> sampleProducts = getSampleProducts(originServerId);
         long now = System.currentTimeMillis();
+
+        boolean isOrigin = config.getServerId().equals(originServerId);
+        SyncStatus initialStatus = isOrigin ? SyncStatus.PENDING : SyncStatus.SUCCESS;
 
         try {
             dbManager.executeInTransaction(conn -> {
                 for (ProductDTO p : sampleProducts) {
                     productRepo.insert(conn, p);
 
-                    // Queue sync events for peer server
+                    // Queue sync events for peer server with deterministic event ID
+                    String eventId = UUID.nameUUIDFromBytes(("SEED-EVENT-" + p.getProductCode()).getBytes()).toString();
                     SyncEventDTO event = new SyncEventDTO(
-                            UUID.randomUUID().toString(),
+                            eventId,
                             "PRODUCT",
                             p.getId(),
                             EventType.CREATE,
                             JsonUtils.toJson(p),
-                            config.getServerId(),
-                            config.getPeerServerId(),
+                            originServerId,
+                            targetServerId,
                             now,
                             1,
-                            SyncStatus.PENDING,
+                            initialStatus,
                             0,
                             null
                     );
@@ -60,7 +66,8 @@ public class DataSeeder {
                 }
                 return null;
             });
-            logger.info(">>> Successfully seeded {} sample products into warehouse database!", sampleProducts.size());
+            logger.info(">>> Successfully seeded {} sample products into warehouse database (Canonical Origin: {})!",
+                    sampleProducts.size(), originServerId);
         } catch (Exception e) {
             logger.error("Failed to seed initial products: {}", e.getMessage(), e);
         }

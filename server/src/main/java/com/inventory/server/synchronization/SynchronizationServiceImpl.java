@@ -70,6 +70,12 @@ public class SynchronizationServiceImpl extends UnicastRemoteObject implements S
         // 1. Loop and Idempotency prevention: Check if already processed
         if (syncRepository.isEventProcessed(event.getEventId())) {
             logger.info("[SYNC-IDEMPOTENT] Event {} already processed previously. Skipping.", event.getEventId());
+            if (!syncRepository.hasEvent(event.getEventId())) {
+                dbManager.executeInTransaction(conn -> {
+                    syncRepository.recordIncomingSyncEvent(conn, event);
+                    return null;
+                });
+            }
             return true;
         }
 
