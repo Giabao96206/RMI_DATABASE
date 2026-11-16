@@ -14,7 +14,6 @@ import org.slf4j.LoggerFactory;
 import java.rmi.RemoteException;
 import java.rmi.registry.LocateRegistry;
 import java.rmi.registry.Registry;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
@@ -60,35 +59,48 @@ public class RmiClientService {
     }
 
     public synchronized void connectBoth() {
-        // Connect to Server 1
+        connectServer1();
+        connectServer2();
+
+        // Ensure active server points to an online server if possible
+        if ("SERVER_1".equals(activeServerId) && !server1Online && server2Online) {
+            switchServer("SERVER_2", "Server 1 chưa sẵn sàng lúc khởi động");
+        } else if ("SERVER_2".equals(activeServerId) && !server2Online && server1Online) {
+            switchServer("SERVER_1", "Server 2 chưa sẵn sàng lúc khởi động");
+        }
+    }
+
+    private synchronized boolean connectServer1() {
         try {
             Registry reg1 = LocateRegistry.getRegistry(config.getServer1Host(), config.getServer1Port());
-            this.server1Stub = (InventoryService) reg1.lookup("InventoryService");
-            this.server1Online = server1Stub.ping();
+            InventoryService stub = (InventoryService) reg1.lookup("InventoryService");
+            stub.ping();
+            this.server1Stub = stub;
+            this.server1Online = true;
             logger.info("Connected to Server 1 at {}:{}", config.getServer1Host(), config.getServer1Port());
+            return true;
         } catch (Exception e) {
             this.server1Stub = null;
             this.server1Online = false;
-            logger.warn("Server 1 unavailable at {}:{}: {}", config.getServer1Host(), config.getServer1Port(), e.getMessage());
+            logger.debug("Server 1 unavailable at {}:{}: {}", config.getServer1Host(), config.getServer1Port(), e.getMessage());
+            return false;
         }
+    }
 
-        // Connect to Server 2
+    private synchronized boolean connectServer2() {
         try {
             Registry reg2 = LocateRegistry.getRegistry(config.getServer2Host(), config.getServer2Port());
-            this.server2Stub = (InventoryService) reg2.lookup("InventoryService");
-            this.server2Online = server2Stub.ping();
+            InventoryService stub = (InventoryService) reg2.lookup("InventoryService");
+            stub.ping();
+            this.server2Stub = stub;
+            this.server2Online = true;
             logger.info("Connected to Server 2 at {}:{}", config.getServer2Host(), config.getServer2Port());
+            return true;
         } catch (Exception e) {
             this.server2Stub = null;
             this.server2Online = false;
-            logger.warn("Server 2 unavailable at {}:{}: {}", config.getServer2Host(), config.getServer2Port(), e.getMessage());
-        }
-
-        // Ensure active server points to an online server
-        if ("SERVER_1".equals(activeServerId) && !server1Online && server2Online) {
-            switchServer("SERVER_2", "Server 1 is offline at startup");
-        } else if ("SERVER_2".equals(activeServerId) && !server2Online && server1Online) {
-            switchServer("SERVER_1", "Server 2 is offline at startup");
+            logger.debug("Server 2 unavailable at {}:{}: {}", config.getServer2Host(), config.getServer2Port(), e.getMessage());
+            return false;
         }
     }
 
@@ -97,34 +109,36 @@ public class RmiClientService {
         boolean s2Before = server2Online;
 
         // Check S1
-        try {
-            if (server1Stub == null) {
-                Registry reg1 = LocateRegistry.getRegistry(config.getServer1Host(), config.getServer1Port());
-                server1Stub = (InventoryService) reg1.lookup("InventoryService");
+        if (server1Stub != null) {
+            try {
+                server1Stub.ping();
+                server1Online = true;
+            } catch (Exception e) {
+                server1Online = false;
+                server1Stub = null;
             }
-            server1Online = server1Stub.ping();
-        } catch (Exception e) {
-            server1Online = false;
-            server1Stub = null;
+        } else {
+            connectServer1();
         }
 
         // Check S2
-        try {
-            if (server2Stub == null) {
-                Registry reg2 = LocateRegistry.getRegistry(config.getServer2Host(), config.getServer2Port());
-                server2Stub = (InventoryService) reg2.lookup("InventoryService");
+        if (server2Stub != null) {
+            try {
+                server2Stub.ping();
+                server2Online = true;
+            } catch (Exception e) {
+                server2Online = false;
+                server2Stub = null;
             }
-            server2Online = server2Stub.ping();
-        } catch (Exception e) {
-            server2Online = false;
-            server2Stub = null;
+        } else {
+            connectServer2();
         }
 
-        // If active server just dropped, auto failover
+        // If current active server is offline, switch to online peer
         if ("SERVER_1".equals(activeServerId) && !server1Online && server2Online) {
-            switchServer("SERVER_2", "Automated failover: Server 1 is offline");
+            switchServer("SERVER_2", "Tự động failover: Server 1 mất kết nối");
         } else if ("SERVER_2".equals(activeServerId) && !server2Online && server1Online) {
-            switchServer("SERVER_1", "Automated failover: Server 2 is offline");
+            switchServer("SERVER_1", "Tự động failover: Server 2 mất kết nối");
         }
 
         if (s1Before != server1Online || s2Before != server2Online) {
@@ -138,90 +152,95 @@ public class RmiClientService {
             this.activeServerId = targetServerId;
             for (Consumer<String> listener : failoverListeners) {
                 try {
-                    listener.accept("Switched to " + targetServerId + ": " + reason);
+                    listener.accept("Chuyển sang " + targetServerId + ": " + reason);
                 } catch (Exception ignored) {}
             }
             notifyStatusChange();
         }
     }
 
-    private InventoryService getActiveStub() throws InventoryException {
-        if ("SERVER_1".equals(activeServerId)) {
-            if (server1Stub != null && server1Online) return server1Stub;
-            // Attempt fast reconnect
-            try {
-                Registry reg1 = LocateRegistry.getRegistry(config.getServer1Host(), config.getServer1Port());
-                server1Stub = (InventoryService) reg1.lookup("InventoryService");
-                server1Online = true;
-                return server1Stub;
-            } catch (Exception e) {
-                server1Online = false;
-                server1Stub = null;
-                // Try failover to Server 2
-                if (server2Stub != null || connectServer2()) {
-                    switchServer("SERVER_2", "Server 1 unreachable, failing over to Server 2");
-                    return server2Stub;
+    private synchronized InventoryService getValidStubFor(String serverId) {
+        if ("SERVER_1".equals(serverId)) {
+            if (server1Stub != null) {
+                try {
+                    server1Stub.ping();
+                    server1Online = true;
+                    return server1Stub;
+                } catch (Exception e) {
+                    server1Stub = null;
+                    server1Online = false;
                 }
+            }
+            if (connectServer1()) {
+                return server1Stub;
             }
         } else {
-            if (server2Stub != null && server2Online) return server2Stub;
-            try {
-                Registry reg2 = LocateRegistry.getRegistry(config.getServer2Host(), config.getServer2Port());
-                server2Stub = (InventoryService) reg2.lookup("InventoryService");
-                server2Online = true;
-                return server2Stub;
-            } catch (Exception e) {
-                server2Online = false;
-                server2Stub = null;
-                // Try failover to Server 1
-                if (server1Stub != null || connectServer1()) {
-                    switchServer("SERVER_1", "Server 2 unreachable, failing over to Server 1");
-                    return server1Stub;
+            if (server2Stub != null) {
+                try {
+                    server2Stub.ping();
+                    server2Online = true;
+                    return server2Stub;
+                } catch (Exception e) {
+                    server2Stub = null;
+                    server2Online = false;
                 }
             }
+            if (connectServer2()) {
+                return server2Stub;
+            }
         }
-        throw new InventoryException("Both servers are currently unreachable! Please check network connections.");
+        return null;
     }
 
-    private boolean connectServer1() {
-        try {
-            Registry reg1 = LocateRegistry.getRegistry(config.getServer1Host(), config.getServer1Port());
-            server1Stub = (InventoryService) reg1.lookup("InventoryService");
-            server1Online = server1Stub.ping();
-            return server1Online;
-        } catch (Exception e) {
-            server1Online = false;
-            return false;
+    private synchronized InventoryService getActiveStub() throws InventoryException {
+        // Try active server
+        InventoryService stub = getValidStubFor(activeServerId);
+        if (stub != null) {
+            return stub;
         }
+
+        // Fallback to peer server
+        String alt = "SERVER_1".equals(activeServerId) ? "SERVER_2" : "SERVER_1";
+        InventoryService altStub = getValidStubFor(alt);
+        if (altStub != null) {
+            switchServer(alt, "Máy chủ trước đó không khả dụng");
+            return altStub;
+        }
+
+        throw new InventoryException("Không thể kết nối đến cả 2 Server (" +
+                config.getServer1Host() + ":" + config.getServer1Port() + " và " +
+                config.getServer2Host() + ":" + config.getServer2Port() + "). Vui lòng kiểm tra Server đang chạy và kết nối Tailscale.");
     }
 
-    private boolean connectServer2() {
-        try {
-            Registry reg2 = LocateRegistry.getRegistry(config.getServer2Host(), config.getServer2Port());
-            server2Stub = (InventoryService) reg2.lookup("InventoryService");
-            server2Online = server2Stub.ping();
-            return server2Online;
-        } catch (Exception e) {
-            server2Online = false;
-            return false;
-        }
-    }
-
-    public <T> T executeWithFailover(RmiOperation<T> operation) throws InventoryException {
+    public synchronized <T> T executeWithFailover(RmiOperation<T> operation) throws InventoryException {
         InventoryService stub = getActiveStub();
         try {
             return operation.execute(stub);
         } catch (RemoteException re) {
-            logger.warn("RemoteException on active server {}: {}. Triggering failover...", activeServerId, re.getMessage());
-            // Switch to peer server and retry once
+            logger.warn("Remote call on active server {} failed: {}. Triggering failover...", activeServerId, re.getMessage());
+            
+            // Invalidate failed server stub
+            if ("SERVER_1".equals(activeServerId)) {
+                server1Stub = null;
+                server1Online = false;
+            } else {
+                server2Stub = null;
+                server2Online = false;
+            }
+
+            // Switch to peer server
             String alternativeServerId = "SERVER_1".equals(activeServerId) ? "SERVER_2" : "SERVER_1";
-            switchServer(alternativeServerId, "Remote call failed on previous server: " + re.getMessage());
-            InventoryService fallbackStub = getActiveStub();
-            try {
-                return operation.execute(fallbackStub);
-            } catch (RemoteException fallbackRe) {
-                logger.error("Call failed on fallback server as well: {}", fallbackRe.getMessage());
-                throw new InventoryException("Communication failure across both servers: " + fallbackRe.getMessage(), fallbackRe);
+            InventoryService fallbackStub = getValidStubFor(alternativeServerId);
+            if (fallbackStub != null) {
+                switchServer(alternativeServerId, "Failover sau khi cuộc gọi RMI gặp lỗi: " + re.getMessage());
+                try {
+                    return operation.execute(fallbackStub);
+                } catch (RemoteException fallbackRe) {
+                    logger.error("Call failed on fallback server {} as well: {}", alternativeServerId, fallbackRe.getMessage());
+                    throw new InventoryException("Lỗi giao tiếp trên cả 2 máy chủ: " + fallbackRe.getMessage(), fallbackRe);
+                }
+            } else {
+                throw new InventoryException("Máy chủ " + activeServerId + " gặp lỗi và máy chủ dự phòng " + alternativeServerId + " cũng không khả dụng.");
             }
         }
     }
@@ -263,7 +282,10 @@ public class RmiClientService {
         if (server1Stub != null && server1Online) {
             try {
                 return server1Stub.getServerStatus();
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                server1Stub = null;
+                server1Online = false;
+            }
         }
         return new ServerStatusDTO("SERVER_1", config.getServer1Host(), config.getServer1Port(), false, 0, 0, 0, 0, "SERVER_2", false);
     }
@@ -272,7 +294,10 @@ public class RmiClientService {
         if (server2Stub != null && server2Online) {
             try {
                 return server2Stub.getServerStatus();
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                server2Stub = null;
+                server2Online = false;
+            }
         }
         return new ServerStatusDTO("SERVER_2", config.getServer2Host(), config.getServer2Port(), false, 0, 0, 0, 0, "SERVER_1", false);
     }

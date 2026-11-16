@@ -89,7 +89,6 @@ public class MainView extends BorderPane {
         clientService.addFailoverListener(msg -> Platform.runLater(() -> {
             logFailover(msg);
             updateHeaderBadges();
-            refreshAllAsync();
         }));
 
         clientService.addStatusChangeListener(() -> Platform.runLater(() -> {
