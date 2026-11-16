@@ -102,6 +102,12 @@ public class SyncManager {
 
                 // Push locally pending events
                 pushPendingEvents();
+
+                // Periodic catalog reconciliation (guarantees both servers have ALL items at all times)
+                reconcileCatalogs();
+
+                // Periodic sync history mirroring
+                syncMissingHistoryFromPeer();
             }
         } catch (Exception e) {
             logger.warn("Exception in sync cycle: {}", e.getMessage());
